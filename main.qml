@@ -14,6 +14,9 @@ Window {
         function onBoard_updated(base64Image) {
             paintboardImage.source = base64Image
         }
+        function onHeatmap_updated(base64Image) {
+            heatmapImage.source = base64Image
+        }
         function onPaint_result(paint_id, status) {
             statusText.text = "Paint result: " + status
         }
@@ -69,9 +72,15 @@ Window {
             Image {
                 id: paintboardImage
                 anchors.fill: parent
-                // The source will be set dynamically from the backend.
-                // An empty source is valid and will not produce an error.
                 source: ""
+                fillMode: Image.PreserveAspectFit
+            }
+
+            Image {
+                id: heatmapImage
+                anchors.fill: parent
+                source: ""
+                visible: heatmapSwitch.checked
                 fillMode: Image.PreserveAspectFit
             }
 
@@ -103,6 +112,7 @@ Window {
             }
 
             GridView {
+                id: colorPicker
                 width: parent.width
                 height: 100
                 cellWidth: 20
@@ -118,10 +128,16 @@ Window {
                     MouseArea {
                         anchors.fill: parent
                         onClicked: {
-                            paintboardImage.parent.children[1].selectedColor = modelData
+                            paintboardImage.parent.children[2].selectedColor = modelData
                         }
                     }
                 }
+            }
+
+            Switch {
+                id: heatmapSwitch
+                text: qsTr("Show Heatmap")
+                checked: false
             }
 
             Text {
