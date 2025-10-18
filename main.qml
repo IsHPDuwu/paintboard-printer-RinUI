@@ -10,18 +10,17 @@ Window {
     title: qsTr("LGS Paintboard 2026")
 
     Connections {
+        target: boardFetcher
+        function onBoard_received(base64Image) {
+            paintboardImage.source = base64Image
+        }
+        function onError(msg) {
+            statusText.text = msg
+        }
+    }
+
+    Connections {
         target: wsClient
-        function onBoard_received(boardData) {
-            paintboardCanvas.boardModel = boardData
-            paintboardCanvas.requestPaint()
-        }
-        function onPaint_event(x, y, r, g, b) {
-            var index = y * 1000 + x
-            if (paintboardCanvas.boardModel && paintboardCanvas.boardModel.length > index) {
-                paintboardCanvas.boardModel[index] = [x, y, r, g, b]
-                paintboardCanvas.requestPaint()
-            }
-        }
         function onPaint_result(paint_id, status) {
             statusText.text = "Paint result: " + status
         }
@@ -70,46 +69,27 @@ Window {
         }
 
         // Center panel for the paintboard
-        Canvas {
-            id: paintboardCanvas
+        Item {
             width: 1000
             height: 600
 
-            property color selectedColor: "red"
-            property var boardModel: []
-
-            onPaint: {
-                var ctx = getContext("2d")
-                if (boardModel.length === 0) {
-                    ctx.fillStyle = "white"
-                    ctx.fillRect(0, 0, width, height)
-                    return
-                }
-
-                var imageData = ctx.createImageData(1000, 600)
-                var data = imageData.data
-
-                for (var i = 0; i < boardModel.length; i++) {
-                    var pixel = boardModel[i] // [x, y, r, g, b]
-                    var index = (pixel[1] * 1000 + pixel[0]) * 4
-                    data[index] = pixel[2]
-                    data[index + 1] = pixel[3]
-                    data[index + 2] = pixel[4]
-                    data[index + 3] = 255 // Alpha
-                }
-
-                ctx.putImageData(imageData, 0, 0)
+            Image {
+                id: paintboardImage
+                anchors.fill: parent
+                source: "qrc:/placeholder.png" // Placeholder
+                fillMode: Image.PreserveAspectFit
             }
 
             MouseArea {
                 anchors.fill: parent
+                property color selectedColor: "red"
                 onClicked: (mouse) => {
                     wsClient.paint(
                         parseInt(uidField.text),
                         tokenText.text,
-                        paintboardCanvas.selectedColor.r * 255,
-                        paintboardCanvas.selectedColor.g * 255,
-                        paintboardCanvas.selectedColor.b * 255,
+                        selectedColor.r * 255,
+                        selectedColor.g * 255,
+                        selectedColor.b * 255,
                         mouse.x,
                         mouse.y
                     )
@@ -143,7 +123,9 @@ Window {
                     MouseArea {
                         anchors.fill: parent
                         onClicked: {
-                            paintboardCanvas.selectedColor = modelData
+                            // This is a simplification; a real app might want a more robust way
+                            // to get the selected color to the paint MouseArea.
+                            paintboardImage.parent.children[1].selectedColor = modelData
                         }
                     }
                 }

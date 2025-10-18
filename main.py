@@ -4,8 +4,9 @@ import asyncio
 import websockets
 import struct
 import os
+import base64
 from PySide6.QtWidgets import QApplication
-from PySide6.QtCore import QObject, Slot, Signal, QThread
+from PySide6.QtCore import QObject, Slot, Signal, QThread, QByteArray
 from PySide6.QtQml import QQmlApplicationEngine
 
 import RinUI
@@ -38,7 +39,7 @@ class ApiHandler(QObject):
             return f"Error parsing response: {e}"
 
 class BoardFetcher(QObject):
-    board_received = Signal(list)
+    board_received = Signal(str) # Now emits a base64 string
     error = Signal(str)
 
     @Slot()
@@ -51,18 +52,18 @@ class BoardFetcher(QObject):
             print(f"Board data received. Size: {len(content)} bytes.")
 
             if len(content) != 1000 * 600 * 3:
-                self.error.emit(f"Error: Invalid board data size. Expected {1000*600*3}, got {len(content)}")
+                self.error.emit(f"Error: Invalid board data size.")
                 return
 
-            board_data = []
-            for y in range(600):
-                for x in range(1000):
-                    i = (y * 1000 + x) * 3
-                    r, g, b = content[i], content[i+1], content[i+2]
-                    board_data.append([x, y, r, g, b])
+            # Create a raw PPM image header
+            header = f"P6\n1000 600\n255\n".encode('ascii')
+            ppm_data = header + content
 
-            print(f"Board data parsed. Emitting signal with {len(board_data)} pixels.")
-            self.board_received.emit(board_data)
+            # Encode as base64
+            base64_data = base64.b64encode(ppm_data).decode('ascii')
+            print("Board data converted to base64 PPM image.")
+            self.board_received.emit(f"data:image/ppm;base64,{base64_data}")
+
         except requests.exceptions.RequestException as e:
             self.error.emit(f"Error getting board: {e}")
 
@@ -72,6 +73,7 @@ class WebSocketWorker(QObject):
     paint_result = Signal(int, int)
 
     start_connecting = Signal()
+    request_board_update = Signal()
 
     def __init__(self):
         super().__init__()
@@ -84,7 +86,14 @@ class WebSocketWorker(QObject):
     @Slot()
     def run(self):
         asyncio.set_event_loop(self.loop)
-        self.loop.run_until_complete(self.connect())
+        self.loop.create_task(self.connect())
+        self.loop.run_forever()
+        tasks = asyncio.all_tasks(loop=self.loop)
+        for task in tasks:
+            task.cancel()
+        group = asyncio.gather(*tasks, return_exceptions=True)
+        self.loop.run_until_complete(group)
+        self.loop.close()
 
     async def connect(self):
         try:
@@ -93,8 +102,13 @@ class WebSocketWorker(QObject):
             asyncio.create_task(self.send_loop())
             async for message in self.websocket:
                 self.handle_message(message)
+        except (asyncio.CancelledError, websockets.exceptions.ConnectionClosed):
+            pass
         except Exception as e:
             self.message_received.emit(f"WebSocket error: {e}")
+        finally:
+            if self.websocket:
+                await self.websocket.close()
 
     def handle_message(self, message):
         offset = 0
@@ -105,6 +119,7 @@ class WebSocketWorker(QObject):
                 x, y, r, g, b = struct.unpack("<HHBBB", message[offset:offset+7])
                 offset += 7
                 self.paint_event.emit(x, y, r, g, b)
+                self.request_board_update.emit() # Request a full refresh
             elif msg_type == 0xfc:
                 self.send_queue.append(b'\xfb')
             elif msg_type == 0xff:
@@ -113,21 +128,31 @@ class WebSocketWorker(QObject):
                 self.paint_result.emit(paint_id, status)
 
     async def send_loop(self):
-        while True:
-            if self.send_queue:
-                await self.websocket.send(b"".join(self.send_queue))
-                self.send_queue.clear()
-            await asyncio.sleep(0.02)
+        try:
+            while True:
+                if self.send_queue:
+                    await self.websocket.send(b"".join(self.send_queue))
+                    self.send_queue.clear()
+                await asyncio.sleep(0.02)
+        except (asyncio.CancelledError, websockets.exceptions.ConnectionClosed):
+            pass
 
     @Slot(bytes)
     def add_to_send_queue(self, data):
         self.send_queue.append(data)
 
+    @Slot()
+    def stop(self):
+        if self.loop.is_running():
+            self.loop.call_soon_threadsafe(self.loop.stop)
+
 class WebSocketClient(QObject):
     paint_event = Signal(int, int, int, int, int)
     paint_result = Signal(int, int)
-    board_received = Signal(list)
     message_received = Signal(str)
+
+    stop_worker = Signal()
+    request_board_update = Signal()
 
     def __init__(self):
         super().__init__()
@@ -138,6 +163,8 @@ class WebSocketClient(QObject):
         self.worker.paint_event.connect(self.paint_event)
         self.worker.paint_result.connect(self.paint_result)
         self.worker.message_received.connect(self.message_received)
+        self.worker.request_board_update.connect(self.request_board_update)
+        self.stop_worker.connect(self.worker.stop)
 
         self.paint_id_counter = 0
 
@@ -156,6 +183,12 @@ class WebSocketClient(QObject):
             self.thread.start()
             self.worker.start_connecting.emit()
 
+    def shutdown(self):
+        if self.thread.isRunning():
+            self.stop_worker.emit()
+            self.thread.quit()
+            self.thread.wait()
+
 if __name__ == '__main__':
     app = QApplication(sys.argv)
 
@@ -172,13 +205,24 @@ if __name__ == '__main__':
     board_fetcher.moveToThread(fetcher_thread)
 
     api_handler.token_received.connect(ws_client.start)
-    board_fetcher.board_received.connect(ws_client.board_received)
-    board_fetcher.error.connect(lambda msg: print(msg))
+    ws_client.request_board_update.connect(board_fetcher.fetch_board)
     fetcher_thread.started.connect(board_fetcher.fetch_board)
 
     engine.rootContext().setContextProperty("apiHandler", api_handler)
     engine.rootContext().setContextProperty("wsClient", ws_client)
     engine.rootContext().setContextProperty("ThemeManager", theme_manager)
+    engine.rootContext().setContextProperty("boardFetcher", board_fetcher)
+
+    @Slot()
+    def shutdown_threads():
+        print("Shutting down threads...")
+        ws_client.shutdown()
+        if fetcher_thread.isRunning():
+            fetcher_thread.quit()
+            fetcher_thread.wait()
+        print("Threads shut down.")
+
+    app.aboutToQuit.connect(shutdown_threads)
 
     engine.load("main.qml")
 
