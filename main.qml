@@ -76,21 +76,31 @@ Window {
                 var ctx = getContext("2d")
                 ctx.fillStyle = color
                 ctx.fillRect(x, y, 1, 1)
+                requestPaint()
             }
 
             function updateBoard(boardData) {
                 var ctx = getContext("2d")
+                var imageData = ctx.createImageData(1000, 600)
+                var data = imageData.data
+
                 for (var i = 0; i < boardData.length; i++) {
-                    var pixel = boardData[i]
-                    ctx.fillStyle = Qt.rgba(pixel[2]/255.0, pixel[3]/255.0, pixel[4]/255.0, 1)
-                    ctx.fillRect(pixel[0], pixel[1], 1, 1)
+                    var pixel = boardData[i] // [x, y, r, g, b]
+                    var index = (pixel[1] * 1000 + pixel[0]) * 4
+                    data[index] = pixel[2]
+                    data[index + 1] = pixel[3]
+                    data[index + 2] = pixel[4]
+                    data[index + 3] = 255 // Alpha
                 }
+
+                ctx.putImageData(imageData, 0, 0)
+                requestPaint()
             }
 
             onPaint: {
-                var ctx = getContext("2d");
-                ctx.fillStyle = "white";
-                ctx.fillRect(0, 0, width, height);
+                // The board is painted by updateBoard and updatePixel,
+                // so we don't need to do anything here.
+                // An explicit onPaint handler is still needed for requestPaint() to work.
             }
 
             MouseArea {
