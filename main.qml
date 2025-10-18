@@ -12,10 +12,15 @@ Window {
     Connections {
         target: wsClient
         function onBoard_received(boardData) {
-            paintboardCanvas.updateBoard(boardData)
+            paintboardCanvas.boardModel = boardData
+            paintboardCanvas.requestPaint()
         }
         function onPaint_event(x, y, r, g, b) {
-            paintboardCanvas.updatePixel(x, y, Qt.rgba(r/255.0, g/255.0, b/255.0, 1))
+            var index = y * 1000 + x
+            if (paintboardCanvas.boardModel && paintboardCanvas.boardModel.length > index) {
+                paintboardCanvas.boardModel[index] = [x, y, r, g, b]
+                paintboardCanvas.requestPaint()
+            }
         }
         function onPaint_result(paint_id, status) {
             statusText.text = "Paint result: " + status
@@ -71,21 +76,21 @@ Window {
             height: 600
 
             property color selectedColor: "red"
+            property var boardModel: []
 
-            function updatePixel(x, y, color) {
+            onPaint: {
                 var ctx = getContext("2d")
-                ctx.fillStyle = color
-                ctx.fillRect(x, y, 1, 1)
-                requestPaint()
-            }
+                if (boardModel.length === 0) {
+                    ctx.fillStyle = "white"
+                    ctx.fillRect(0, 0, width, height)
+                    return
+                }
 
-            function updateBoard(boardData) {
-                var ctx = getContext("2d")
                 var imageData = ctx.createImageData(1000, 600)
                 var data = imageData.data
 
-                for (var i = 0; i < boardData.length; i++) {
-                    var pixel = boardData[i] // [x, y, r, g, b]
+                for (var i = 0; i < boardModel.length; i++) {
+                    var pixel = boardModel[i] // [x, y, r, g, b]
                     var index = (pixel[1] * 1000 + pixel[0]) * 4
                     data[index] = pixel[2]
                     data[index + 1] = pixel[3]
@@ -94,13 +99,6 @@ Window {
                 }
 
                 ctx.putImageData(imageData, 0, 0)
-                requestPaint()
-            }
-
-            onPaint: {
-                // The board is painted by updateBoard and updatePixel,
-                // so we don't need to do anything here.
-                // An explicit onPaint handler is still needed for requestPaint() to work.
             }
 
             MouseArea {
