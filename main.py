@@ -3,11 +3,12 @@ import requests
 import asyncio
 import websockets
 import struct
+import os
 from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import QObject, Slot, Signal, QThread
+from PySide6.QtQml import QQmlApplicationEngine
 
 import RinUI
-from RinUI import RinUIWindow
 
 class ApiHandler(QObject):
     token_received = Signal(str)
@@ -35,23 +36,23 @@ class ApiHandler(QObject):
         except (ValueError, KeyError) as e:
             return f"Error parsing response: {e}"
 
-class WebSocketClient(QObject):
+class WebSocketWorker(QObject):
     message_received = Signal(str)
     paint_event = Signal(int, int, int, int, int)
     paint_result = Signal(int, int)
     board_received = Signal(list)
+
+    start_connecting = Signal()
 
     def __init__(self):
         super().__init__()
         self.uri = "wss://paintboard.luogu.me/api/paintboard/ws"
         self.websocket = None
         self.loop = asyncio.new_event_loop()
-        self.thread = QThread()
-        self.moveToThread(self.thread)
-        self.thread.started.connect(self.run)
         self.send_queue = []
-        self.paint_id_counter = 0
+        self.start_connecting.connect(self.run)
 
+    @Slot()
     def run(self):
         asyncio.set_event_loop(self.loop)
         self.loop.run_until_complete(self.connect())
@@ -81,7 +82,6 @@ class WebSocketClient(QObject):
         except requests.exceptions.RequestException as e:
             self.message_received.emit(f"Error getting board: {e}")
 
-
     def handle_message(self, message):
         offset = 0
         while offset < len(message):
@@ -103,7 +103,31 @@ class WebSocketClient(QObject):
             if self.send_queue:
                 await self.websocket.send(b"".join(self.send_queue))
                 self.send_queue.clear()
-            await asyncio.sleep(0.02) # Send every 20ms
+            await asyncio.sleep(0.02)
+
+    @Slot(bytes)
+    def add_to_send_queue(self, data):
+        self.send_queue.append(data)
+
+
+class WebSocketClient(QObject):
+    paint_event = Signal(int, int, int, int, int)
+    paint_result = Signal(int, int)
+    board_received = Signal(list)
+    message_received = Signal(str)
+
+    def __init__(self):
+        super().__init__()
+        self.worker = WebSocketWorker()
+        self.thread = QThread()
+        self.worker.moveToThread(self.thread)
+
+        self.worker.paint_event.connect(self.paint_event)
+        self.worker.paint_result.connect(self.paint_result)
+        self.worker.board_received.connect(self.board_received)
+        self.worker.message_received.connect(self.message_received)
+
+        self.paint_id_counter = 0
 
     @Slot(int, str, int, int, int, int, int)
     def paint(self, uid, token, r, g, b, x, y):
@@ -112,25 +136,34 @@ class WebSocketClient(QObject):
         uid_bytes = uid.to_bytes(3, 'little')
         token_bytes = bytes.fromhex(token.replace("-", ""))
         paint_data = struct.pack("<BHHBBB", 0xfe, x, y, r, g, b) + uid_bytes + token_bytes + paint_id.to_bytes(4, 'little')
-        self.send_queue.append(paint_data)
+        self.worker.add_to_send_queue(paint_data)
 
     @Slot()
     def start(self):
         if not self.thread.isRunning():
             self.thread.start()
+            self.worker.start_connecting.emit()
+
 
 if __name__ == '__main__':
-    print(RinUI.__file__)
     app = QApplication(sys.argv)
 
-    window = RinUIWindow()
+    engine = QQmlApplicationEngine()
+
+    rinui_path = os.path.dirname(RinUI.__file__)
+    engine.addImportPath(os.path.abspath(os.path.join(rinui_path, os.pardir)))
+
     api_handler = ApiHandler()
     ws_client = WebSocketClient()
 
-    api_handler.token_received.connect(lambda token: ws_client.start())
+    api_handler.token_received.connect(ws_client.start)
 
-    window.setContextProperty("apiHandler", api_handler)
-    window.setContextProperty("wsClient", ws_client)
-    window.load("main.qml")
+    engine.rootContext().setContextProperty("apiHandler", api_handler)
+    engine.rootContext().setContextProperty("wsClient", ws_client)
 
-    app.exec()
+    engine.load("main.qml")
+
+    if not engine.rootObjects():
+        sys.exit(-1)
+
+    sys.exit(app.exec())
