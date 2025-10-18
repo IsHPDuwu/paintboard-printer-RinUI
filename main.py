@@ -19,26 +19,45 @@ HEATMAP_BLOCK_SIZE = 10
 HEATMAP_WIDTH = 1000 // HEATMAP_BLOCK_SIZE
 HEATMAP_HEIGHT = 600 // HEATMAP_BLOCK_SIZE
 
-class ApiHandler(QObject):
+class TokenFetcher(QObject):
     token_received = Signal(str)
+    error = Signal(str)
+
+    @Slot(int, str)
+    def get_token(self, uid, access_key):
+        try:
+            response = requests.post("https://paintboard.luogu.me/api/auth/gettoken", json={"uid": uid, "access_key": access_key})
+            response.raise_for_status()
+            data = response.json()
+            if data.get("data", {}).get("token"):
+                self.token_received.emit(data["data"]["token"])
+            else:
+                self.error.emit(f"Error: {data.get('data', {}).get('errorType', 'Unknown error')}")
+        except requests.exceptions.RequestException as e: self.error.emit(f"Error: {e}")
+        except (ValueError, KeyError) as e: self.error.emit(f"Error parsing response: {e}")
+
+class ApiHandler(QObject):
+    token_result = Signal(bool, str) # success, message
+    start_fetch_token = Signal(int, str)
 
     def __init__(self):
         super().__init__()
 
-    @Slot(str, str, result=str)
+    @Slot(str, str)
     def get_token(self, uid, access_key):
         try:
-            response = requests.post("https://paintboard.luogu.me/api/auth/gettoken", json={"uid": int(uid), "access_key": access_key})
-            response.raise_for_status()
-            data = response.json()
-            if data.get("data", {}).get("token"):
-                token = data["data"]["token"]
-                self.token_received.emit(token)
-                return token
-            else:
-                return f"Error: {data.get('data', {}).get('errorType', 'Unknown error')}"
-        except requests.exceptions.RequestException as e: return f"Error: {e}"
-        except (ValueError, KeyError) as e: return f"Error parsing response: {e}"
+            self.start_fetch_token.emit(int(uid), access_key)
+        except ValueError:
+            self.token_result.emit(False, "Error: UID must be a number.")
+
+    @Slot(str)
+    def on_token_received(self, token):
+        self.token_result.emit(True, token)
+
+    @Slot(str)
+    def on_token_error(self, error_message):
+        self.token_result.emit(False, error_message)
+
 
 class BoardFetcher(QObject):
     board_received = Signal(bytes)
@@ -47,11 +66,9 @@ class BoardFetcher(QObject):
     @Slot()
     def fetch_board(self):
         try:
-            print("Fetching board data...")
             response = requests.get("https://paintboard.luogu.me/api/paintboard/getboard")
             response.raise_for_status()
             content = response.content
-            print(f"Board data received. Size: {len(content)} bytes.")
             if len(content) != 1000 * 600 * 3:
                 self.error.emit(f"Error: Invalid board data size.")
                 return
@@ -154,38 +171,25 @@ class WebSocketClient(QObject):
             self.board_data[index] = r; self.board_data[index+1] = g; self.board_data[index+2] = b
             self.emit_board_update()
             hx, hy = x // HEATMAP_BLOCK_SIZE, y // HEATMAP_BLOCK_SIZE
-            if 0 <= hx < HEATMAP_WIDTH and 0 <= hy < HEATMAP_HEIGHT:
-                self.heatmap[hy, hx] += 1
+            if 0 <= hx < HEATMAP_WIDTH and 0 <= hy < HEATMAP_HEIGHT: self.heatmap[hy, hx] += 1
 
     @Slot()
     def decay_heatmap(self):
         self.heatmap *= 0.95; self.render_heatmap()
 
     def render_heatmap(self):
-        if np.max(self.heatmap) < 0.1: # Threshold to avoid rendering empty heatmap
-            self.heatmap_updated.emit("") # Emit empty string to hide it
-            return
-
+        if np.max(self.heatmap) < 0.1:
+            self.heatmap_updated.emit(""); return
         norm_heatmap = self.heatmap / (np.max(self.heatmap) + 1e-6)
-
-        img = Image.new("RGBA", (1000, 600), (0,0,0,0))
-        draw = ImageDraw.Draw(img)
-
+        img = Image.new("RGBA", (1000, 600), (0,0,0,0)); draw = ImageDraw.Draw(img)
         for y in range(HEATMAP_HEIGHT):
             for x in range(HEATMAP_WIDTH):
                 heat = norm_heatmap[y, x]
                 if heat > 0.1:
-                    r = int(255 * min(1, heat * 2))
-                    g = int(255 * max(0, heat * 2 - 1))
-                    b = 0
-                    a = int(150 * heat) # Alpha based on heat
-
-                    x0 = x * HEATMAP_BLOCK_SIZE; y0 = y * HEATMAP_BLOCK_SIZE
-                    x1 = x0 + HEATMAP_BLOCK_SIZE; y1 = y0 + HEATMAP_BLOCK_SIZE
+                    r, g, b, a = int(255 * min(1, heat * 2)), int(255 * max(0, heat * 2 - 1)), 0, int(150 * heat)
+                    x0, y0, x1, y1 = x * HEATMAP_BLOCK_SIZE, y * HEATMAP_BLOCK_SIZE, (x + 1) * HEATMAP_BLOCK_SIZE, (y + 1) * HEATMAP_BLOCK_SIZE
                     draw.rectangle([x0, y0, x1, y1], fill=(r,g,b,a))
-
-        buffer = io.BytesIO()
-        img.save(buffer, format="PNG")
+        buffer = io.BytesIO(); img.save(buffer, format="PNG")
         base64_data = base64.b64encode(buffer.getvalue()).decode('ascii')
         self.heatmap_updated.emit(f"data:image/png;base64,{base64_data}")
 
@@ -212,7 +216,14 @@ if __name__ == '__main__':
     board_fetcher = BoardFetcher(); fetcher_thread = QThread()
     board_fetcher.moveToThread(fetcher_thread)
 
-    api_handler.token_received.connect(ws_client.start)
+    token_fetcher = TokenFetcher(); token_fetcher_thread = QThread()
+    token_fetcher.moveToThread(token_fetcher_thread)
+
+    api_handler.start_fetch_token.connect(token_fetcher.get_token)
+    token_fetcher.token_received.connect(api_handler.on_token_received)
+    token_fetcher.error.connect(api_handler.on_token_error)
+    api_handler.token_result.connect(lambda success, msg: ws_client.start() if success else None)
+
     board_fetcher.board_received.connect(ws_client.on_board_received)
     board_fetcher.error.connect(lambda msg: print(f"Board fetch error: {msg}"))
     ws_client.request_board_update.connect(board_fetcher.fetch_board)
@@ -226,10 +237,14 @@ if __name__ == '__main__':
     def shutdown_threads():
         print("Shutting down threads..."); ws_client.shutdown()
         if fetcher_thread.isRunning(): fetcher_thread.quit(); fetcher_thread.wait()
+        if token_fetcher_thread.isRunning(): token_fetcher_thread.quit(); token_fetcher_thread.wait()
         print("Threads shut down.")
 
     app.aboutToQuit.connect(shutdown_threads)
     engine.load("main.qml")
     if not engine.rootObjects(): sys.exit(-1)
+
     fetcher_thread.start()
+    token_fetcher_thread.start()
+
     sys.exit(app.exec())

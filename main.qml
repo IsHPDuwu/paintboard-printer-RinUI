@@ -4,10 +4,23 @@ import QtQuick.Window
 import RinUI
 
 Window {
-    width: 1250 // Increased width to accommodate layout
-    height: 900  // Increased height for controls below
+    width: 1250
+    height: 900
     visible: true
     title: qsTr("LGS Paintboard 2026")
+
+    Connections {
+        target: apiHandler
+        function onToken_result(success, message) {
+            if (success) {
+                tokenText.text = message
+                statusText.text = "Token received! Connecting to WebSocket..."
+            } else {
+                tokenText.text = ""
+                statusText.text = message
+            }
+        }
+    }
 
     Connections {
         target: wsClient
@@ -17,7 +30,7 @@ Window {
         function onMessage_received(msg) { statusText.text = msg }
     }
 
-    // Main layout is now a Column
+    // Main layout
     Column {
         anchors.fill: parent
         anchors.margins: 10
@@ -39,13 +52,8 @@ Window {
                     text: qsTr("Get Token")
                     onClicked: {
                         statusText.text = "Getting token..."
-                        var token = apiHandler.get_token(uidField.text, accessKeyField.text)
-                        tokenText.text = token
-                        if (token.startsWith("Error:")) {
-                            statusText.text = token
-                        } else {
-                            statusText.text = "Token received!"
-                        }
+                        // This is now an async call, it does not return a value
+                        apiHandler.get_token(uidField.text, accessKeyField.text)
                     }
                 }
                 TextField { id: tokenText; placeholderText: qsTr("Token"); readOnly: true }
@@ -74,16 +82,12 @@ Window {
             height: 100
             spacing: 20
 
-            // Color Palette
             Column {
                 spacing: 5
                 Text { text: qsTr("Color Palette") }
                 GridView {
                     id: colorPicker
-                    width: 150
-                    height: 100
-                    cellWidth: 20
-                    cellHeight: 20
+                    width: 150; height: 100; cellWidth: 20; cellHeight: 20
                     model: ["red", "green", "blue", "yellow", "black", "white", "purple", "orange", "cyan", "magenta"]
                     delegate: Rectangle {
                         width: 20; height: 20
@@ -91,7 +95,6 @@ Window {
                         MouseArea {
                             anchors.fill: parent
                             onClicked: {
-                                // Find the MouseArea for painting and set its color
                                 paintboardImage.parent.children[2].selectedColor = modelData
                             }
                         }
@@ -99,14 +102,12 @@ Window {
                 }
             }
 
-            // Options
             Column {
                 spacing: 5
                 Text { text: qsTr("Options") }
                 Switch { id: heatmapSwitch; text: qsTr("Show Heatmap"); checked: false }
             }
 
-            // Status
             Column {
                 spacing: 5
                 Text { text: qsTr("Status") }
