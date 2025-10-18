@@ -10,17 +10,10 @@ Window {
     title: qsTr("LGS Paintboard 2026")
 
     Connections {
-        target: boardFetcher
-        function onBoard_received(base64Image) {
+        target: wsClient
+        function onBoard_updated(base64Image) {
             paintboardImage.source = base64Image
         }
-        function onError(msg) {
-            statusText.text = msg
-        }
-    }
-
-    Connections {
-        target: wsClient
         function onPaint_result(paint_id, status) {
             statusText.text = "Paint result: " + status
         }
@@ -76,7 +69,9 @@ Window {
             Image {
                 id: paintboardImage
                 anchors.fill: parent
-                source: "qrc:/placeholder.png" // Placeholder
+                // The source will be set dynamically from the backend.
+                // An empty source is valid and will not produce an error.
+                source: ""
                 fillMode: Image.PreserveAspectFit
             }
 
@@ -123,8 +118,6 @@ Window {
                     MouseArea {
                         anchors.fill: parent
                         onClicked: {
-                            // This is a simplification; a real app might want a more robust way
-                            // to get the selected color to the paint MouseArea.
                             paintboardImage.parent.children[1].selectedColor = modelData
                         }
                     }
