@@ -40,6 +40,9 @@ class ApiHandler(QObject):
     token_result = Signal(bool, str) # success, message
     start_fetch_token = Signal(int, str)
 
+    # This signal will now be used to trigger the websocket start
+    token_successfully_fetched = Signal()
+
     def __init__(self):
         super().__init__()
 
@@ -53,6 +56,7 @@ class ApiHandler(QObject):
     @Slot(str)
     def on_token_received(self, token):
         self.token_result.emit(True, token)
+        self.token_successfully_fetched.emit() # Emit the new signal
 
     @Slot(str)
     def on_token_error(self, error_message):
@@ -222,7 +226,9 @@ if __name__ == '__main__':
     api_handler.start_fetch_token.connect(token_fetcher.get_token)
     token_fetcher.token_received.connect(api_handler.on_token_received)
     token_fetcher.error.connect(api_handler.on_token_error)
-    api_handler.token_result.connect(lambda success, msg: ws_client.start() if success else None)
+
+    # This is the critical line that was missing.
+    api_handler.token_successfully_fetched.connect(ws_client.start)
 
     board_fetcher.board_received.connect(ws_client.on_board_received)
     board_fetcher.error.connect(lambda msg: print(f"Board fetch error: {msg}"))
